@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Periodic Table Guess Who</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        :root {
+            --bg: #05070a; --surface: #0f172a; --card: #1e293b; --border: #334155;
+            --accent: #00d4ff; --accent2: #f59e0b; --text: #f1f5f9; --muted: #94a3b8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: var(--text); }
+
+        .screen { display: none; flex-direction: column; align-items: center; padding: 20px; min-height: 100vh; }
+        .active { display: flex !important; }
+
+        /* ── Periodic table layout ── */
+        .ptable {
+            display: grid;
+            grid-template-columns: repeat(18, minmax(0, 1fr));
+            gap: 4px;
+            width: 100%;
+            max-width: 1500px;
+            margin: 12px 0;
+        }
+
+        .cell {
+            aspect-ratio: 1;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 4px;
+            text-align: center;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+            min-width: 0;
+            transition: transform 0.1s;
+        }
+        .cell:hover { transform: scale(1.05); z-index: 10; }
+
+        /* Increased Font Sizes */
+        .cell .num  { font-size: 0.65rem; color: var(--muted); line-height: 1; align-self: flex-start; }
+        .cell .sym  { font-size: 1.1rem; font-weight: bold; line-height: 1; margin: 1px 0; }
+        .cell .name { font-size: 0.5rem; color: var(--muted); line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; text-align: center; }
+
+        /* Category colours */
+        .cat-alkali     { background: #1a0a00; border-color: #b45309; }
+        .cat-alkali     .sym { color: #fb923c; }
+        .cat-alkaline   { background: #1a1000; border-color: #a16207; }
+        .cat-alkaline   .sym { color: #fbbf24; }
+        .cat-transition { background: #0a0f1a; border-color: #1e40af; }
+        .cat-transition .sym { color: #60a5fa; }
+        .cat-post       { background: #0a1a12; border-color: #15803d; }
+        .cat-post       .sym { color: #4ade80; }
+        .cat-metalloid  { background: #1a0a1a; border-color: #7e22ce; }
+        .cat-metalloid  .sym { color: #c084fc; }
+        .cat-nonmetal   { background: #001a1a; border-color: #0e7490; }
+        .cat-nonmetal   .sym { color: #22d3ee; }
+        .cat-halogen    { background: #1a001a; border-color: #9d174d; }
+        .cat-halogen    .sym { color: #f472b6; }
+        .cat-noble      { background: #00001a; border-color: #1d4ed8; }
+        .cat-noble      .sym { color: #93c5fd; }
+        .cat-lanthanide { background: #0f1a00; border-color: #3f6212; }
+        .cat-lanthanide .sym { color: #86efac; }
+        .cat-actinide   { background: #1a0f00; border-color: #92400e; }
+        .cat-actinide   .sym { color: #fcd34d; }
+        .cat-unknown    { background: #111; border-color: #444; }
+        .cat-unknown    .sym { color: #999; }
+
+        .cell.eliminated { opacity: 0.1 !important; filter: grayscale(1); transform: scale(0.95); }
+        .cell.selected   { outline: 3px solid var(--accent2); box-shadow: 0 0 10px var(--accent2); }
+
+        /* Blank placeholder for cells not in your set */
+        .cell-empty {
+            aspect-ratio: 1;
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 3px;
+            min-width: 0;
+        }
+        /* Gap spacer (period table gaps) */
+        .cell-gap { min-width: 0; }
+
+        /* Opponent board: hide all element info */
+        .opp-board .cell { background: #050505 !important; border-color: #111 !important; cursor: default; transform: none; }
+        .opp-board .cell * { display: none !important; }
+        .opp-board .cell.eliminated { opacity: 1 !important; background: #0a0a0a !important; }
+
+        .header-bar {
+            position: sticky; top: 0; background: var(--surface); width: 100%;
+            padding: 12px 20px; display: flex; justify-content: space-around; align-items: center;
+            border-bottom: 2px solid var(--accent); z-index: 100; gap: 10px;
+        }
+        .section-label {
+            font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--muted); margin: 16px 0 4px;
+        }
+        .btn { background: var(--accent); color: #000; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 0.9rem; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 10px 20px; cursor: pointer; font-size: 0.9rem; }
+        .btn-ghost:hover { background: var(--card); }
+
+        /* Legend */
+        .legend { display: flex; flex-wrap: wrap; gap: 10px; max-width: 1400px; width: 100%; margin-bottom: 8px; }
+        .leg-item { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: var(--muted); }
+        .leg-dot { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+    </style>
+</head>
+<body>
+
+<div id="screen-setup" class="screen active">
+    <h2 id="setup-title" style="margin-bottom:12px">Pick Your Secret Element (Waiting for Player 2...)</h2>
+    <div class="legend" id="setup-legend"></div>
+    <div id="setup-grid" class="ptable"></div>
+    <button class="btn" id="btn-confirm" disabled onclick="confirmSecret()" style="margin-top:16px">Lock in Selection</button>
+</div>
+
+<div id="screen-game" class="screen">
+    <div class="header-bar">
+        <div style="border: 1px solid var(--accent2); padding: 5px 14px; border-radius:4px">
+            SECRET: <strong id="my-secret-display" style="color:var(--accent2)">?</strong>
+        </div>
+        <div id="turn-display" style="font-weight:bold">Waiting...</div>
+        <div style="display:flex;gap:8px">
+            <button class="btn-ghost" onclick="guessPrompt()">Guess Element</button>
+            <button class="btn" id="btn-end" onclick="socket.emit('end-turn')">End Turn</button>
+        </div>
+    </div>
+
+    <p class="section-label">Your Board — eliminate candidates by clicking</p>
+    <div class="legend" id="game-legend"></div>
+    <div id="my-board" class="ptable"></div>
+
+    <p class="section-label" style="margin-top:28px">Opponent Board (hidden)</p>
+    <div id="opp-board" class="ptable opp-board"></div>
+</div>
+
+<div id="screen-over" class="screen">
+    <h1 id="over-msg" style="margin-bottom:24px"></h1>
+    <button class="btn" onclick="location.reload()">New Game</button>
+</div>
+
+<script>
+const socket = io();
+
+const ELEMENTS = [
+  // period 1
+  {z:1,  s:"H",  n:"Hydrogen",    cat:"nonmetal",   period:1, group:1},
+  {z:2,  s:"He", n:"Helium",       cat:"noble",      period:1, group:18},
+  // period 2
+  {z:3,  s:"Li", n:"Lithium",      cat:"alkali",     period:2, group:1},
+  {z:4,  s:"Be", n:"Beryllium",    cat:"alkaline",   period:2, group:2},
+  {z:5,  s:"B",  n:"Boron",         cat:"metalloid",  period:2, group:13},
+  {z:6,  s:"C",  n:"Carbon",       cat:"nonmetal",   period:2, group:14},
+  {z:7,  s:"N",  n:"Nitrogen",     cat:"nonmetal",   period:2, group:15},
+  {z:8,  s:"O",  n:"Oxygen",       cat:"nonmetal",   period:2, group:16},
+  {z:9,  s:"F",  n:"Fluorine",     cat:"halogen",    period:2, group:17},
+  {z:10, s:"Ne", n:"Neon",         cat:"noble",      period:2, group:18},
+  // period 3
+  {z:11, s:"Na", n:"Sodium",       cat:"alkali",     period:3, group:1},
+  {z:12, s:"Mg", n:"Magnesium",    cat:"alkaline",   period:3, group:2},
+  {z:13, s:"Al", n:"Aluminum",     cat:"post",       period:3, group:13},
+  {z:14, s:"Si", n:"Silicon",      cat:"metalloid",  period:3, group:14},
+  {z:15, s:"P",  n:"Phosphorus",   cat:"nonmetal",   period:3, group:15},
+  {z:16, s:"S",  n:"Sulfur",       cat:"nonmetal",   period:3, group:16},
+  {z:17, s:"Cl", n:"Chlorine",     cat:"halogen",    period:3, group:17},
+  {z:18, s:"Ar", n:"Argon",        cat:"noble",      period:3, group:18},
+  // period 4
+  {z:19, s:"K",  n:"Potassium",    cat:"alkali",     period:4, group:1},
+  {z:20, s:"Ca", n:"Calcium",      cat:"alkaline",   period:4, group:2},
+  {z:21, s:"Sc", n:"Scandium",     cat:"transition", period:4, group:3},
+  {z:22, s:"Ti", n:"Titanium",     cat:"transition", period:4, group:4},
+  {z:23, s:"V",  n:"Vanadium",     cat:"transition", period:4, group:5},
+  {z:24, s:"Cr", n:"Chromium",     cat:"transition", period:4, group:6},
+  {z:25, s:"Mn", n:"Manganese",    cat:"transition", period:4, group:7},
+  {z:26, s:"Fe", n:"Iron",         cat:"transition", period:4, group:8},
+  {z:27, s:"Co", n:"Cobalt",       cat:"transition", period:4, group:9},
+  {z:28, s:"Ni", n:"Nickel",       cat:"transition", period:4, group:10},
+  {z:29, s:"Cu", n:"Copper",       cat:"transition", period:4, group:11},
+  {z:30, s:"Zn", n:"Zinc",         cat:"transition", period:4, group:12},
+  {z:31, s:"Ga", n:"Gallium",      cat:"post",       period:4, group:13},
+  {z:32, s:"Ge", n:"Germanium",    cat:"metalloid",  period:4, group:14},
+  {z:33, s:"As", n:"Arsenic",      cat:"metalloid",  period:4, group:15},
+  {z:34, s:"Se", n:"Selenium",     cat:"nonmetal",   period:4, group:16},
+  {z:35, s:"Br", n:"Bromine",      cat:"halogen",    period:4, group:17},
+  {z:36, s:"Kr", n:"Krypton",      cat:"noble",      period:4, group:18},
+  // period 5
+  {z:37, s:"Rb", n:"Rubidium",     cat:"alkali",     period:5, group:1},
+  {z:38, s:"Sr", n:"Strontium",    cat:"alkaline",   period:5, group:2},
+  {z:39, s:"Y",  n:"Yttrium",      cat:"transition", period:5, group:3},
+  {z:40, s:"Zr", n:"Zirconium",    cat:"transition", period:5, group:4},
+  {z:41, s:"Nb", n:"Niobium",      cat:"transition", period:5, group:5},
+  {z:42, s:"Mo", n:"Molybdenum",   cat:"transition", period:5, group:6},
+  {z:43, s:"Tc", n:"Technetium",   cat:"transition", period:5, group:7},
+  {z:44, s:"Ru", n:"Ruthenium",    cat:"transition", period:5, group:8},
+  {z:45, s:"Rh", n:"Rhodium",      cat:"transition", period:5, group:9},
+  {z:46, s:"Pd", n:"Palladium",    cat:"transition", period:5, group:10},
+  {z:47, s:"Ag", n:"Silver",       cat:"transition", period:5, group:11},
+  {z:48, s:"Cd", n:"Cadmium",      cat:"transition", period:5, group:12},
+  {z:49, s:"In", n:"Indium",       cat:"post",       period:5, group:13},
+  {z:50, s:"Sn", n:"Tin",          cat:"post",       period:5, group:14},
+  {z:51, s:"Sb", n:"Antimony",     cat:"metalloid",  period:5, group:15},
+  {z:52, s:"Te", n:"Tellurium",    cat:"metalloid",  period:5, group:16},
+  {z:53, s:"I",  n:"Iodine",       cat:"halogen",    period:5, group:17},
+  {z:54, s:"Xe", n:"Xenon",        cat:"noble",      period:5, group:18},
+  // period 6 (main)
+  {z:55, s:"Cs", n:"Cesium",       cat:"alkali",     period:6, group:1},
+  {z:56, s:"Ba", n:"Barium",       cat:"alkaline",   period:6, group:2},
+  {z:57, s:"La", n:"Lanthanum",    cat:"lanthanide", period:6, group:3},
+  {z:72, s:"Hf", n:"Hafnium",      cat:"transition", period:6, group:4},
+  {z:73, s:"Ta", n:"Tantalum",     cat:"transition", period:6, group:5},
+  {z:74, s:"W",  n:"Tungsten",     cat:"transition", period:6, group:6},
+  {z:75, s:"Re", n:"Rhenium",      cat:"transition", period:6, group:7},
+  {z:76, s:"Os", n:"Osmium",       cat:"transition", period:6, group:8},
+  {z:77, s:"Ir", n:"Iridium",      cat:"transition", period:6, group:9},
+  {z:78, s:"Pt", n:"Platinum",     cat:"transition", period:6, group:10},
+  {z:79, s:"Au", n:"Gold",         cat:"transition", period:6, group:11},
+  {z:80, s:"Hg", n:"Mercury",      cat:"transition", period:6, group:12},
+  {z:81, s:"Tl", n:"Thallium",     cat:"post",       period:6, group:13},
+  {z:82, s:"Pb", n:"Lead",         cat:"post",       period:6, group:14},
+  {z:83, s:"Bi", n:"Bismuth",      cat:"post",       period:6, group:15},
+  {z:84, s:"Po", n:"Polonium",     cat:"post",       period:6, group:16},
+  {z:85, s:"At", n:"Astatine",     cat:"halogen",    period:6, group:17},
+  {z:86, s:"Rn", n:"Radon",        cat:"noble",      period:6, group:18},
+  // period 7 (main)
+  {z:87, s:"Fr", n:"Francium",     cat:"alkali",     period:7, group:1},
+  {z:88, s:"Ra", n:"Radium",       cat:"alkaline",   period:7, group:2},
+  {z:89, s:"Ac", n:"Actinium",     cat:"actinide",   period:7, group:3},
+  {z:104,s:"Rf", n:"Rutherfordium",cat:"transition", period:7, group:4},
+  {z:105,s:"Db", n:"Dubnium",      cat:"transition", period:7, group:5},
+  {z:106,s:"Sg", n:"Seaborgium",   cat:"transition", period:7, group:6},
+  {z:107,s:"Bh", n:"Bohrium",      cat:"transition", period:7, group:7},
+  {z:108,s:"Hs", n:"Hassium",      cat:"transition", period:7, group:8},
+  {z:109,s:"Mt", n:"Meitnerium",   cat:"unknown",    period:7, group:9},
+  {z:110,s:"Ds", n:"Darmstadtium", cat:"unknown",    period:7, group:10},
+  {z:111,s:"Rg", n:"Roentgenium",  cat:"unknown",    period:7, group:11},
+  {z:112,s:"Cn", n:"Copernicium",  cat:"transition", period:7, group:12},
+  {z:113,s:"Nh", n:"Nihonium",     cat:"unknown",    period:7, group:13},
+  {z:114,s:"Fl", n:"Flerovium",    cat:"unknown",    period:7, group:14},
+  {z:115,s:"Mc", n:"Moscovium",    cat:"unknown",    period:7, group:15},
+  {z:116,s:"Lv", n:"Livermorium",  cat:"unknown",    period:7, group:16},
+  {z:117,s:"Ts", n:"Tennessine",   cat:"unknown",    period:7, group:17},
+  {z:118,s:"Og", n:"Oganesson",    cat:"noble",      period:7, group:18},
+  // f-block rows
+  {z:58, s:"Ce", n:"Cerium",       cat:"lanthanide", period:8, group:4},
+  {z:59, s:"Pr", n:"Praseodymium", cat:"lanthanide", period:8, group:5},
+  {z:60, s:"Nd", n:"Neodymium",    cat:"lanthanide", period:8, group:6},
+  {z:61, s:"Pm", n:"Promethium",   cat:"lanthanide", period:8, group:7},
+  {z:62, s:"Sm", n:"Samarium",     cat:"lanthanide", period:8, group:8},
+  {z:63, s:"Eu", n:"Europium",     cat:"lanthanide", period:8, group:9},
+  {z:64, s:"Gd", n:"Gadolinium",   cat:"lanthanide", period:8, group:10},
+  {z:65, s:"Tb", n:"Terbium",      cat:"lanthanide", period:8, group:11},
+  {z:66, s:"Dy", n:"Dysprosium",   cat:"lanthanide", period:8, group:12},
+  {z:67, s:"Ho", n:"Holmium",      cat:"lanthanide", period:8, group:13},
+  {z:68, s:"Er", n:"Erbium",       cat:"lanthanide", period:8, group:14},
+  {z:69, s:"Tm", n:"Thulium",      cat:"lanthanide", period:8, group:15},
+  {z:70, s:"Yb", n:"Ytterbium",    cat:"lanthanide", period:8, group:16},
+  {z:71, s:"Lu", n:"Lutetium",     cat:"lanthanide", period:8, group:17},
+  {z:90, s:"Th", n:"Thorium",      cat:"actinide",   period:9, group:4},
+  {z:91, s:"Pa", n:"Protactinium", cat:"actinide",   period:9, group:5},
+  {z:92, s:"U",  n:"Uranium",      cat:"actinide",   period:9, group:6},
+  {z:93, s:"Np", n:"Neptunium",    cat:"actinide",   period:9, group:7},
+  {z:94, s:"Pu", n:"Plutonium",    cat:"actinide",   period:9, group:8},
+  {z:95, s:"Am", n:"Americium",    cat:"actinide",   period:9, group:9},
+  {z:96, s:"Cm", n:"Curium",       cat:"actinide",   period:9, group:10},
+  {z:97, s:"Bk", n:"Berkelium",    cat:"actinide",   period:9, group:11},
+  {z:98, s:"Cf", n:"Californium",  cat:"actinide",   period:9, group:12},
+  {z:99, s:"Es", n:"Einsteinium",  cat:"actinide",   period:9, group:13},
+  {z:100,s:"Fm", n:"Fermium",      cat:"actinide",   period:9, group:14},
+  {z:101,s:"Md", n:"Mendelevium",  cat:"actinide",   period:9, group:15},
+  {z:102,s:"No", n:"Nobelium",     cat:"actinide",   period:9, group:16},
+  {z:103,s:"Lr", n:"Lawrencium",   cat:"actinide",   period:9, group:17},
+];
+
+const SETS = {
+  A: ELEMENTS.filter(e => e.z <= 59),
+  B: ELEMENTS.filter(e => e.z > 59),
+};
+
+const CAT_COLORS = {
+  alkali: '#fb923c', alkaline: '#fbbf24', transition: '#60a5fa',
+  post: '#4ade80', metalloid: '#c084fc', nonmetal: '#22d3ee',
+  halogen: '#f472b6', noble: '#93c5fd', lanthanide: '#86efac',
+  actinide: '#fcd34d', unknown: '#888',
+};
+const CAT_LABELS = {
+  alkali:'Alkali Metal', alkaline:'Alkaline Earth', transition:'Transition Metal',
+  post:'Post-transition', metalloid:'Metalloid', nonmetal:'Nonmetal',
+  halogen:'Halogen', noble:'Noble Gas', lanthanide:'Lanthanide',
+  actinide:'Actinide', unknown:'Unknown',
+};
+
+function buildLegend(containerId) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = '';
+  Object.entries(CAT_LABELS).forEach(([k,v]) => {
+    const item = document.createElement('div');
+    item.className = 'leg-item';
+    item.innerHTML = `<div class="leg-dot" style="background:${CAT_COLORS[k]}"></div>${v}`;
+    el.appendChild(item);
+  });
+}
+
+function buildPeriodicTable(containerId, myElements, interactive) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+  const mySet = new Set(myElements.map(e => e.z));
+  const ROWS = 10;
+  const COLS = 18;
+  const lookup = {};
+  ELEMENTS.forEach(e => { lookup[`${e.period}-${e.group}`] = e; });
+
+  for (let row = 1; row <= ROWS; row++) {
+    for (let col = 1; col <= COLS; col++) {
+      const period = row <= 7 ? row : (row === 8 ? null : row - 1);
+      if (row === 8) {
+        const gap = document.createElement('div');
+        gap.className = 'cell-gap';
+        gap.style.height = '10px';
+        container.appendChild(gap);
+        continue;
+      }
+      if ((row === 9 || row === 10) && (col < 4 || col > 17)) {
+        const empty = document.createElement('div');
+        empty.className = 'cell-gap';
+        container.appendChild(empty);
+        continue;
+      }
+      const el = lookup[`${period}-${col}`];
+      if (!el) {
+        const gap = document.createElement('div');
+        gap.className = 'cell-gap';
+        container.appendChild(gap);
+        continue;
+      }
+      if (!mySet.has(el.z)) {
+        const blank = document.createElement('div');
+        blank.className = 'cell-empty';
+        container.appendChild(blank);
+        continue;
+      }
+      const d = document.createElement('div');
+      d.className = `cell cat-${el.cat}`;
+      d.id = (interactive ? 'm-' : 'o-') + el.s;
+      d.innerHTML = `<span class="num">${el.z}</span><span class="sym">${el.s}</span><span class="name">${el.n}</span>`;
+      if (interactive) {
+        d.onclick = () => {
+          d.classList.toggle('eliminated');
+          socket.emit('flip-tile', { id: el.s, state: d.classList.contains('eliminated') });
+          checkAutoWin();
+        };
+      }
+      container.appendChild(d);
+    }
+  }
+}
+
+let playerSetKey, selectedObj;
+
+socket.on('assigned', ({ playerNum }) => {
+  playerSetKey = playerNum === 1 ? 'A' : 'B';
+});
+
+socket.on('phase-change', (data) => {
+  if (data.phase === 'setup') {
+    document.getElementById('setup-title').textContent = 'Pick Your Secret Element';
+    buildLegend('setup-legend');
+    buildSetupGrid();
+  }
+  if (data.phase === 'playing') {
+    document.getElementById('screen-setup').classList.remove('active');
+    document.getElementById('screen-game').classList.add('active');
+    document.getElementById('my-secret-display').textContent = selectedObj.s;
+    const oppSet = playerSetKey === 'A' ? 'B' : 'A';
+    buildLegend('game-legend');
+    buildPeriodicTable('my-board', SETS[oppSet], true);
+    buildPeriodicTable('opp-board', SETS[playerSetKey], false);
+    updateTurn(data.currentTurn === socket.id);
+  }
+});
+
+function buildSetupGrid() {
+  const container = document.getElementById('setup-grid');
+  container.innerHTML = '';
+  const COLS = 18;
+  const ROWS = 10;
+  const lookup = {};
+  ELEMENTS.forEach(e => { lookup[`${e.period}-${e.group}`] = e; });
+  const mySetElements = SETS[playerSetKey];
+  const mySetZSet = new Set(mySetElements.map(e => e.z));
+
+  for (let row = 1; row <= ROWS; row++) {
+    for (let col = 1; col <= COLS; col++) {
+      const period = row <= 7 ? row : (row === 8 ? null : row - 1);
+      if (row === 8) {
+        const gap = document.createElement('div');
+        gap.className = 'cell-gap';
+        gap.style.height = '10px';
+        container.appendChild(gap);
+        continue;
+      }
+      if ((row === 9 || row === 10) && (col < 4 || col > 17)) {
+        const empty = document.createElement('div');
+        empty.className = 'cell-gap';
+        container.appendChild(empty);
+        continue;
+      }
+      const el = lookup[`${period}-${col}`];
+      if (!el || !mySetZSet.has(el.z)) {
+        const blank = document.createElement(el ? 'div' : 'div');
+        blank.className = el ? 'cell-empty' : 'cell-gap';
+        container.appendChild(blank);
+        continue;
+      }
+      const d = document.createElement('div');
+      d.className = `cell cat-${el.cat}`;
+      d.innerHTML = `<span class="num">${el.z}</span><span class="sym">${el.s}</span><span class="name">${el.n}</span>`;
+      d.onclick = () => {
+        selectedObj = el;
+        document.querySelectorAll('#setup-grid .cell').forEach(c => c.classList.remove('selected'));
+        d.classList.add('selected');
+        document.getElementById('btn-confirm').disabled = false;
+      };
+      container.appendChild(d);
+    }
+  }
+}
+
+function confirmSecret() {
+  socket.emit('choose-secret', { element: selectedObj.s });
+  document.getElementById('btn-confirm').disabled = true;
+  document.getElementById('setup-title').textContent = 'Waiting for Opponent...';
+  document.querySelectorAll('#setup-grid .cell').forEach(c => c.style.pointerEvents = 'none');
+}
+
+function checkAutoWin() {
+  const active = document.querySelectorAll('#my-board .cell:not(.eliminated)');
+  if (active.length === 1) {
+    socket.emit('guess-element', { symbol: active[0].querySelector('.sym').textContent });
+  }
+}
+
+function updateTurn(mine) {
+  document.getElementById('turn-display').textContent = mine ? '⚡ YOUR TURN' : "Opponent's Turn";
+  document.getElementById('btn-end').disabled = !mine;
+}
+
+socket.on('turn-change', ({ currentTurn }) => updateTurn(currentTurn === socket.id));
+
+socket.on('game-over', ({ winnerId, secret }) => {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const over = document.getElementById('screen-over');
+  over.classList.add('active');
+  document.getElementById('over-msg').textContent =
+    (winnerId === socket.id ? '🏆 WINNER!' : '💀 DEFEAT!') + '  Secret: ' + secret;
+});
+
+function guessPrompt() {
+  const g = prompt('Enter Element Symbol:');
+  if (g) socket.emit('guess-element', { symbol: g.trim() });
+}
+</script>
+</body>
+</html>
